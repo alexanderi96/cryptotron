@@ -9,6 +9,7 @@ import (
 	"os"
 	"log"
 	"strconv"
+	"flag"
 )
 
 type bot struct {
