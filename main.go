@@ -41,6 +41,11 @@ func main() {
 	flag.StringVar(&cmcToken, "cmc", "", "The CoinMarketCap api token")
 	flag.Parse()
 
+	if tgToken == "" || cmcToken == "" {
+		flag.Usage()
+		return
+	}
+
 	dsp := echotron.NewDispatcher(tgToken, newBot)
 	log.Fatalln(dsp.Poll())
 }
