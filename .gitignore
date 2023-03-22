@@ -1,2 +1,4 @@
 # config file
-config.json
+openai_api_key
+admin
+telegram_token
