@@ -42,7 +42,7 @@ var (
 	//go:embed admin
 	admin string
 
-	dsp *echotron.Dispatcher
+	//dsp *echotron.Dispatcher
 
 	conf_file_path string = ".config/wallet-tracker/config.yaml"
 	work_dir       string = "Documents/wallet-tracker/wallet_"
@@ -94,15 +94,15 @@ func newBot(chatID int64) echotron.Bot {
 		chatID,
 		echotron.NewAPI(telegram_token),
 	}
-	go bot.selfDestruct(time.After(time.Hour))
+	//go bot.selfDestruct(time.After(time.Hour))
 	return bot
 }
 
-func (b *bot) selfDestruct(timech <-chan time.Time) {
-	<-timech
-	b.SendMessage("goodbye", b.chatID, nil)
-	dsp.DelSession(b.chatID)
-}
+// func (b *bot) selfDestruct(timech <-chan time.Time) {
+// 	<-timech
+// 	b.SendMessage("goodbye", b.chatID, nil)
+// 	dsp.DelSession(b.chatID)
+// }
 
 // Returns the message from the given update.
 func message(update *echotron.Update) string {
@@ -161,7 +161,7 @@ func (b *bot) Update(update *echotron.Update) {
 				b.SendMessage("Invalid command, sending all.", b.chatID, nil)
 			}
 
-			b.SendDocument(echotron.NewInputFileBytes( msg_split[1] + "_graph.png", generateGraph(config, csv_file, startDate, endDate)), b.chatID, nil)
+			b.SendDocument(echotron.NewInputFileBytes(msg_split[1]+"_graph.png", generateGraph(config, csv_file, startDate, endDate)), b.chatID, nil)
 
 		case strings.HasPrefix(msg, "/data"):
 			if checkPathExists(csv_file) {
@@ -173,7 +173,7 @@ func (b *bot) Update(update *echotron.Update) {
 
 		case strings.HasPrefix(msg, "/gpt"):
 			msg_split := strings.Split(msg, " ")
-			
+
 			prompt := ""
 			data_context_prompt := "\n\nIl prezzo è espresso in " + config["currency"] + ", mentre la quantità posseduta personalmente e quella del burn wallet sono espresse in " + config["token"] + ". Il numero massimo di token disponibili è : " + config["total_supply"] + ".\nPuoi arrotondare i dati alle ultime 3 cifre significative, e mostrarmi una percentuale di aumento o diminuzione rispetto all'inizio e la fine del periodo di riferimento.\n\n"
 			rows_to_analyze := 0
@@ -186,7 +186,7 @@ func (b *bot) Update(update *echotron.Update) {
 			} else if len(msg_split) > 2 {
 				rows_to_analyze, err = strconv.Atoi(msg_split[len(msg_split)-1])
 				if err != nil {
-					prompt = strings.Join(msg_split[1:len(msg_split)], " ")
+					prompt = strings.Join(msg_split[1:], " ")
 				} else {
 					prompt = strings.Join(msg_split[1:len(msg_split)-1], " ")
 				}
@@ -202,15 +202,14 @@ func (b *bot) Update(update *echotron.Update) {
 					if err != nil {
 						b.SendMessage("Header not found", b.chatID, nil)
 						return
-					} 
+					}
 					msg_to_send = prompt + data_context_prompt + headers + rows
 				}
 			} else {
 				msg_to_send = prompt
 			}
-			
 
-			b.SendMessage("Analyzing message:\n\n" + msg_to_send, b.chatID, nil)
+			b.SendMessage("Analyzing message:\n\n"+msg_to_send, b.chatID, nil)
 			msg, err := SendMessageToChatGPT(msg_to_send, "gpt-3.5-turbo")
 			if err != nil {
 				b.SendMessage(err.Error(), b.chatID, nil)
@@ -242,12 +241,12 @@ func readConfig(path string) (map[string]string, error) {
 	return config, nil
 }
 
-func createFolderIfNotExists(path string) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		os.Mkdir(path, 0755)
-		log.Println("Directory '" + path + "' created")
-	}
-}
+// func createFolderIfNotExists(path string) {
+// 	if _, err := os.Stat(path); os.IsNotExist(err) {
+// 		os.Mkdir(path, 0755)
+// 		log.Println("Directory '" + path + "' created")
+// 	}
+// }
 
 func checkPathExists(path string) bool {
 	_, err := os.Stat(path)
@@ -308,7 +307,7 @@ func generateGraph(config map[string]string, csvFile, startDate, endDate string)
 		// Create the plot
 		p := plot.New()
 		//p.Title.Text = fmt.Sprintf("%s\ntelegram_Token: %s (%s)\nContratto: %s\nWallet: %s", label, telegram_token, config["telegram_token"], config["contract"], config["wallet_address"])
-		p.Title.Text = fmt.Sprintf("%s", label)
+		p.Title.Text = label
 		p.X.Label.Text = "Data"
 		p.Y.Label.Text = "Valore"
 
@@ -358,7 +357,7 @@ func SendMessageToChatGPT(message string, engineID string) (string, error) {
 	)
 
 	if err != nil {
-		log.Print("ChatCompletion error: %v\n", err)
+		log.Print("ChatCompletion error: ", err)
 		return "", err
 	}
 
@@ -390,7 +389,6 @@ func ReadCsvHeaders(filename string) (string, error) {
 	}
 	return buffer.String(), nil
 }
-
 
 func ReadLastNCsvRows(filename string, n int) (string, error) {
 	// Apri il file CSV in modalità lettura
