@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/user"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -34,27 +35,36 @@ type bot struct {
 
 var (
 	//go:embed telegram_token
-	telegram_token string
+	telegramToken string
 
 	//go:embed openai_api_key
-	openai_api_key string
+	openaiApiKey string
 
 	//go:embed admin
 	admin string
 
 	//dsp *echotron.Dispatcher
 
-	conf_file_path string = ".config/wallet-tracker/config.yaml"
-	work_dir       string = "Documents/wallet-tracker/wallet_"
-	csv_file       string
+	confFilePath string = ".config/wallet-tracker/config.yaml"
+	workDir      string = "Documents/wallet-tracker/wallet_"
+	csvFile      string
 
 	config map[string]string
 	client *openai.Client
+
+	commands = []echotron.BotCommand{
+		{Command: "/ping", Description: "check bot status"},
+		{Command: "/graph", Description: "send the graph for a given time range"},
+		{Command: "/data", Description: "sends the latest data"},
+		{Command: "/analyze", Description: "makes you analyze the last n rows from chat-gpt"},
+	}
+
+	// parseMarkdown = &echotron.MessageOptions{ParseMode: echotron.MarkdownV2}
 )
 
 func init() {
-	if len(telegram_token) == 0 {
-		log.Fatal("Empty telegram_token file")
+	if len(telegramToken) == 0 {
+		log.Fatal("Empty telegramToken file")
 	}
 
 	if len(admin) == 0 {
@@ -67,32 +77,39 @@ func init() {
 	}
 	homeDir := usr.HomeDir
 
-	conf_file_path = fmt.Sprintf("%s/%s", homeDir, conf_file_path)
-	if !checkPathExists(conf_file_path) {
-		log.Fatal("Config file not found: ", conf_file_path)
+	confFilePath = fmt.Sprintf("%s/%s", homeDir, confFilePath)
+	if !checkPathExists(confFilePath) {
+		log.Fatal("Config file not found: ", confFilePath)
 	}
 
 	//read wallet tracker config file from ~/.config/wallet-tracker/config.yaml and put the variables in the config map
-	config, err = readConfig(conf_file_path)
+	config, err = readConfig(confFilePath)
 	if err != nil {
 		log.Fatalf(fmt.Sprintf("Unable to read the config file: %s", err))
 	}
 	log.Println("Config file loaded")
 
-	work_dir = fmt.Sprintf("%s/%s%s", homeDir, work_dir, config["wallet_address"])
-	if !checkPathExists(work_dir) {
+	workDir = fmt.Sprintf("%s/%s%s", homeDir, workDir, config["wallet_address"])
+	if !checkPathExists(workDir) {
 		log.Fatal("Work folder not found")
 	}
 	log.Println("Work folder loaded")
-	csv_file = fmt.Sprintf("%s/%s_data.csv", work_dir, config["token"])
+	csvFile = fmt.Sprintf("%s/%s_data.csv", workDir, config["token"])
 
-	client = openai.NewClient(openai_api_key)
+	client = openai.NewClient(openaiApiKey)
+
+	go setCommands()
+}
+
+func setCommands() {
+	api := echotron.NewAPI(telegramToken)
+	api.SetMyCommands(nil, commands...)
 }
 
 func newBot(chatID int64) echotron.Bot {
 	bot := &bot{
 		chatID,
-		echotron.NewAPI(telegram_token),
+		echotron.NewAPI(telegramToken),
 	}
 	//go bot.selfDestruct(time.After(time.Hour))
 	return bot
@@ -122,7 +139,7 @@ func (b *bot) Update(update *echotron.Update) {
 	log.Println("Message recieved from: " + strconv.FormatInt(b.chatID, 10))
 
 	if strconv.Itoa(int(b.chatID)) != admin {
-		b.SendMessage("📷", b.chatID, nil)
+		b.SendMessage("👀", b.chatID, nil)
 	} else {
 
 		switch msg := message(update); {
@@ -130,97 +147,131 @@ func (b *bot) Update(update *echotron.Update) {
 			b.SendMessage("pong", b.chatID, nil)
 
 		case strings.HasPrefix(msg, "/graph"):
-			msg_split := strings.Split(msg, " ")
-			if len(msg_split) != 2 {
-				b.SendMessage("Invalid command", b.chatID, nil)
+			msgSplit := strings.Split(msg, " ")
+			if len(msgSplit) == 1 {
+				startDate, endDate := calculateTimeRange()
+				b.SendDocument(echotron.NewInputFileBytes("24h_graph.png", generateGraph(config, csvFile, startDate, endDate)), b.chatID, nil)
+				return
+			} else if len(msgSplit) != 2 {
+				b.SendMessage("Invalid command. Usage: /graph <time range>, where <time range> is a number followed by 'h' or 'd' (e.g. '24h' or '7d'). Sending graph for last 24 hours.", b.chatID, nil)
+				startDate, endDate := calculateTimeRange()
+				b.SendDocument(echotron.NewInputFileBytes("24h_graph.png", generateGraph(config, csvFile, startDate, endDate)), b.chatID, nil)
 				return
 			}
 
-			now := time.Now()
-			endDate := now.Format("02-01-2006 15:04:05")
-			startDate := ""
+			startDate, endDate := calculateTimeRange(msgSplit[1])
+			name := msgSplit[1]
 
-			switch msg_split[1] {
-			case "24h":
-				startDate = now.Add(-24 * time.Hour).Format("02-01-2006 15:04:05")
-
-			case "7d":
-				startDate = now.AddDate(0, 0, -7).Format("02-01-2006 15:04:05")
-
-			case "30d":
-				startDate = now.AddDate(0, 0, -30).Format("02-01-2006 15:04:05")
-
-			case "90d":
-				startDate = now.AddDate(0, 0, -90).Format("02-01-2006 15:04:05")
-
-			case "365d":
-				startDate = now.AddDate(0, 0, -365).Format("02-01-2006 15:04:05")
-
-			case "all":
-			default:
-				b.SendMessage("Invalid command, sending all.", b.chatID, nil)
+			if startDate == "" {
+				b.SendMessage("Invalid time range. Usage: /graph <time range>, where <time range> is a number followed by 'h' or 'd' (e.g. '24h' or '7d'). Sending graph for last 24 hours.", b.chatID, nil)
+				startDate, endDate = calculateTimeRange()
+				name = "default"
 			}
 
-			b.SendDocument(echotron.NewInputFileBytes(msg_split[1]+"_graph.png", generateGraph(config, csv_file, startDate, endDate)), b.chatID, nil)
+			b.SendDocument(echotron.NewInputFileBytes(name+"_graph.png", generateGraph(config, csvFile, startDate, endDate)), b.chatID, nil)
 
 		case strings.HasPrefix(msg, "/data"):
-			if checkPathExists(csv_file) {
+			if checkPathExists(csvFile) {
 				b.SendMessage("Sending the latest data", b.chatID, nil)
-				b.SendDocument(echotron.NewInputFilePath(csv_file), b.chatID, nil)
+				b.SendDocument(echotron.NewInputFilePath(csvFile), b.chatID, nil)
 			} else {
 				b.SendMessage("Data not found", b.chatID, nil)
 			}
 
-		case strings.HasPrefix(msg, "/gpt"):
-			msg_split := strings.Split(msg, " ")
+		case strings.HasPrefix(msg, "/analyze"):
+			msgSplit := strings.Split(msg, " ")
 
 			prompt := ""
-			data_context_prompt := "\n\nIl prezzo è espresso in " + config["currency"] + ", mentre la quantità posseduta personalmente e quella del burn wallet sono espresse in " + config["token"] + ". Il numero massimo di token disponibili è : " + config["total_supply"] + ".\nPuoi arrotondare i dati alle ultime 3 cifre significative, e mostrarmi una percentuale di aumento o diminuzione rispetto all'inizio e la fine del periodo di riferimento.\n\n"
-			rows_to_analyze := 0
-			msg_to_send := ""
+			dataContextPrompt := "\n\nThe price is expressed in " + config["currency"] + ", while the quantity held personally and in the burn wallet is expressed in " + config["token"] + ". The maximum number of available tokens is: " + config["total_supply"] + ".\nYou can round the data to the last 3 significant digits, and show me a percentage increase or decrease compared to the beginning and end of the reference period. Hilight the important stuff with the telegram syntax.\n\n"
+			rowsToAnalyze := 0
+			msgToSend := ""
 			var err error
 
-			if len(msg_split) <= 2 {
-				b.SendMessage("Invalid command", b.chatID, nil)
-				return
-			} else if len(msg_split) > 2 {
-				rows_to_analyze, err = strconv.Atoi(msg_split[len(msg_split)-1])
-				if err != nil {
-					prompt = strings.Join(msg_split[1:], " ")
+			if len(msgSplit) == 1 {
+				rowsToAnalyze = 24
+			} else if len(msgSplit) > 1 {
+				_, err := strconv.Atoi(msgSplit[len(msgSplit)-1])
+				if err == nil {
+					rowsToAnalyze, _ = strconv.Atoi(msgSplit[len(msgSplit)-1])
+					prompt = strings.Join(msgSplit[1:len(msgSplit)-1], " ")
 				} else {
-					prompt = strings.Join(msg_split[1:len(msg_split)-1], " ")
+					prompt = strings.Join(msgSplit[1:], " ")
+					rowsToAnalyze = 24
 				}
 			}
 
-			if rows_to_analyze > 0 {
-				headers, err := ReadCsvHeaders(csv_file)
-				if err != nil {
-					b.SendMessage("Data not found", b.chatID, nil)
-					return
-				} else {
-					rows, err := ReadLastNCsvRows(csv_file, rows_to_analyze)
-					if err != nil {
-						b.SendMessage("Header not found", b.chatID, nil)
-						return
-					}
-					msg_to_send = prompt + data_context_prompt + headers + rows
-				}
-			} else {
-				msg_to_send = prompt
-			}
-
-			b.SendMessage("Analyzing message:\n\n"+msg_to_send, b.chatID, nil)
-			msg, err := SendMessageToChatGPT(msg_to_send, "gpt-3.5-turbo")
+			headers, err := ReadCsvHeaders(csvFile)
 			if err != nil {
+				b.SendMessage("Data not found", b.chatID, nil)
+				return
+			}
+
+			rows, err := ReadLastNCsvRows(csvFile, rowsToAnalyze)
+			if err != nil {
+				b.SendMessage("Header not found", b.chatID, nil)
+				return
+			}
+
+			msgToSend = prompt + dataContextPrompt + headers + rows
+
+			b.SendMessage("Analyzing message", b.chatID, nil)
+			msg, err := SendMessageToChatGPT(msgToSend, "gpt-3.5-turbo")
+			if err != nil {
+				log.Println("Error: " + err.Error())
 				b.SendMessage(err.Error(), b.chatID, nil)
 			} else {
+				log.Println("Sending response: " + msg)
 				b.SendMessage(msg, b.chatID, nil)
 			}
 
 		default:
-			b.SendMessage("👀", b.chatID, nil)
+			log.Println("Sending message to chatgpt: " + msg)
+			response, err := SendMessageToChatGPT(msg, "gpt-3.5-turbo")
+			if err != nil {
+				log.Println("Error: " + err.Error())
+				b.SendMessage(err.Error(), b.chatID, nil)
+			} else {
+				log.Println("Sending response: " + response)
+				b.SendMessage(response, b.chatID, nil)
+			}
 		}
 	}
+}
+
+func calculateTimeRange(timeRange ...string) (string, string) {
+	now := time.Now()
+	endDate := now.Format("02-01-2006 15:04:05")
+	startDate := ""
+
+	if len(timeRange) > 0 {
+		// Extract numerical and unit components from time range string
+		re := regexp.MustCompile(`^(\d+)([dh])$`)
+		matches := re.FindStringSubmatch(timeRange[0])
+
+		if len(matches) == 3 {
+			num, err := strconv.Atoi(matches[1])
+			if err != nil {
+				num = 24
+			}
+
+			unit := matches[2]
+
+			// Calculate start date based on numerical and unit components
+			switch unit {
+			case "h":
+				startDate = now.Add(-time.Duration(num) * time.Hour).Format("02-01-2006 15:04:05")
+
+			case "d":
+				startDate = now.AddDate(0, 0, -num).Format("02-01-2006 15:04:05")
+			}
+		} else {
+			timeRange[0] = "24h"
+		}
+	} else {
+		startDate = now.Add(-24 * time.Hour).Format("02-01-2006 15:04:05")
+	}
+
+	return startDate, endDate
 }
 
 // the readConfig function, it reads the yaml file and puts the variables in the config map
@@ -306,7 +357,7 @@ func generateGraph(config map[string]string, csvFile, startDate, endDate string)
 	for i, label := range records[0][1:] {
 		// Create the plot
 		p := plot.New()
-		//p.Title.Text = fmt.Sprintf("%s\ntelegram_Token: %s (%s)\nContratto: %s\nWallet: %s", label, telegram_token, config["telegram_token"], config["contract"], config["wallet_address"])
+		//p.Title.Text = fmt.Sprintf("%s\ntelegramToken: %s (%s)\nContratto: %s\nWallet: %s", label, telegramToken, config["telegramToken"], config["contract"], config["wallet_address"])
 		p.Title.Text = label
 		p.X.Label.Text = "Data"
 		p.Y.Label.Text = "Valore"
@@ -423,7 +474,7 @@ func ReadLastNCsvRows(filename string, n int) (string, error) {
 }
 
 func main() {
-	dsp := echotron.NewDispatcher(telegram_token, newBot)
+	dsp := echotron.NewDispatcher(telegramToken, newBot)
 	log.Println("Running Cryptotron Bot...")
 
 	for {
