@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	_ "embed"
 	"encoding/csv"
 	"fmt"
 	"image/png"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/user"
@@ -24,8 +22,6 @@ import (
 
 	"github.com/NicoNex/echotron/v3"
 	"github.com/go-yaml/yaml"
-
-	openai "github.com/sashabaranov/go-openai"
 )
 
 type bot struct {
@@ -37,9 +33,6 @@ var (
 	//go:embed telegram_token
 	telegramToken string
 
-	//go:embed openai_api_key
-	openaiApiKey string
-
 	//go:embed admin
 	admin string
 
@@ -50,13 +43,11 @@ var (
 	csvFile      string
 
 	config map[string]string
-	client *openai.Client
 
 	commands = []echotron.BotCommand{
 		{Command: "/ping", Description: "check bot status"},
 		{Command: "/graph", Description: "send the graph for a given time range"},
 		{Command: "/data", Description: "sends the latest data"},
-		{Command: "/analyze", Description: "makes you analyze the last n rows from chat-gpt"},
 	}
 
 	// parseMarkdown = &echotron.MessageOptions{ParseMode: echotron.MarkdownV2}
@@ -95,8 +86,6 @@ func init() {
 	}
 	log.Println("Work folder loaded")
 	csvFile = fmt.Sprintf("%s/%s_data.csv", workDir, config["token"])
-
-	client = openai.NewClient(openaiApiKey)
 
 	go setCommands()
 }
@@ -178,62 +167,8 @@ func (b *bot) Update(update *echotron.Update) {
 				b.SendMessage("Data not found", b.chatID, nil)
 			}
 
-		case strings.HasPrefix(msg, "/analyze"):
-			msgSplit := strings.Split(msg, " ")
-
-			prompt := ""
-			dataContextPrompt := "\n\nThe price is expressed in " + config["currency"] + ", while the quantity held personally and in the burn wallet is expressed in " + config["token"] + ". The maximum number of available tokens is: " + config["total_supply"] + ".\nYou can round the data to the last 3 significant digits, and show me a percentage increase or decrease compared to the beginning and end of the reference period. Hilight the important stuff with the telegram syntax.\n\n"
-			rowsToAnalyze := 0
-			msgToSend := ""
-			var err error
-
-			if len(msgSplit) == 1 {
-				rowsToAnalyze = 24
-			} else if len(msgSplit) > 1 {
-				_, err := strconv.Atoi(msgSplit[len(msgSplit)-1])
-				if err == nil {
-					rowsToAnalyze, _ = strconv.Atoi(msgSplit[len(msgSplit)-1])
-					prompt = strings.Join(msgSplit[1:len(msgSplit)-1], " ")
-				} else {
-					prompt = strings.Join(msgSplit[1:], " ")
-					rowsToAnalyze = 24
-				}
-			}
-
-			headers, err := ReadCsvHeaders(csvFile)
-			if err != nil {
-				b.SendMessage("Data not found", b.chatID, nil)
-				return
-			}
-
-			rows, err := ReadLastNCsvRows(csvFile, rowsToAnalyze)
-			if err != nil {
-				b.SendMessage("Header not found", b.chatID, nil)
-				return
-			}
-
-			msgToSend = prompt + dataContextPrompt + headers + rows
-
-			b.SendMessage("Analyzing message", b.chatID, nil)
-			msg, err := SendMessageToChatGPT(msgToSend, "gpt-3.5-turbo")
-			if err != nil {
-				log.Println("Error: " + err.Error())
-				b.SendMessage(err.Error(), b.chatID, nil)
-			} else {
-				log.Println("Sending response: " + msg)
-				b.SendMessage(msg, b.chatID, nil)
-			}
-
 		default:
-			log.Println("Sending message to chatgpt: " + msg)
-			response, err := SendMessageToChatGPT(msg, "gpt-3.5-turbo")
-			if err != nil {
-				log.Println("Error: " + err.Error())
-				b.SendMessage(err.Error(), b.chatID, nil)
-			} else {
-				log.Println("Sending response: " + response)
-				b.SendMessage(response, b.chatID, nil)
-			}
+			b.SendMessage("📈", b.chatID, nil)
 		}
 	}
 }
@@ -307,7 +242,7 @@ func checkPathExists(path string) bool {
 func generateGraph(config map[string]string, csvFile, startDate, endDate string) []byte {
 	log.Printf("Creazione dei grafici dal file: '%s'.", csvFile)
 
-	file, err := ioutil.ReadFile(csvFile)
+	file, err := os.ReadFile(csvFile)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -391,28 +326,6 @@ func generateGraph(config map[string]string, csvFile, startDate, endDate string)
 	png.Encode(&buf, img.Image())
 
 	return buf.Bytes()
-}
-
-func SendMessageToChatGPT(message string, engineID string) (string, error) {
-	resp, err := client.CreateChatCompletion(
-		context.Background(),
-		openai.ChatCompletionRequest{
-			Model: openai.GPT3Dot5Turbo,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: message,
-				},
-			},
-		},
-	)
-
-	if err != nil {
-		log.Print("ChatCompletion error: ", err)
-		return "", err
-	}
-
-	return resp.Choices[0].Message.Content, nil
 }
 
 func ReadCsvHeaders(filename string) (string, error) {
